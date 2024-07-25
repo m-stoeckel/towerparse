@@ -1,18 +1,20 @@
 import os
 import pickle
 
-import data_provider
 import torch
-from biaffine import XLMRobertaForBiaffineParsing
-from torch.utils.data import DataLoader, SequentialSampler
+from torch.nn.utils.rnn import pad_sequence
+from torch.utils.data import DataLoader, SequentialSampler, TensorDataset
 from tqdm import tqdm
-from transformers import XLMRobertaConfig, XLMRobertaTokenizer
+from transformers import XLMRobertaConfig, XLMRobertaTokenizerFast
+
+from towerparse.biaffine import XLMRobertaForBiaffineParsing
+from towerparse.data_provider import language_specific_preprocessing
 
 
 class TowerParser:
     def __init__(self, tower_model, device="cpu"):
         self.tower_model = None
-        self.tokenizer = XLMRobertaTokenizer.from_pretrained("xlm-roberta-base")
+        self.tokenizer = XLMRobertaTokenizerFast.from_pretrained("xlm-roberta-base")
         self.device = torch.device(device)
         self.load_parser(tower_model)
 
@@ -39,35 +41,70 @@ class TowerParser:
 
     def parse(
         self,
-        lang,
-        sentences,
+        lang: str,
+        sentences: list[list[str]],
         batch_size=1,
-        max_length=256,
-        max_word_len=140,
-    ) -> list[list[tuple[int, str, int, str]]]:
-        dataset_arcs = []
-        dataset_rels = []
+        max_length=510,
+        verbose: bool = False,
+    ) -> tuple[list[list[tuple[int, str, int, str]]], list[dict]]:
 
-        dataset = data_provider.featurize_sents(
-            sentences,
-            self.tokenizer,
-            lang,
-            max_length=max_length,
+        self.tokenizer: XLMRobertaTokenizerFast
+        batch_encoding = self.tokenizer(
+            [language_specific_preprocessing(lang, sent) for sent in sentences],
+            padding=True,
+            truncation=True,
+            return_tensors="pt",
+        )
+
+        batch_subwords = [
+            self.tokenizer.convert_ids_to_tokens(
+                input_ids,
+                skip_special_tokens=True,
+            )
+            for input_ids in batch_encoding.input_ids
+        ]
+
+        word_start_positions = [
+            [i for (i, subword) in enumerate(subwords, 1) if subword.startswith("▁")]
+            for subwords in batch_subwords
+        ]
+        word_start_positions = [
+            torch.tensor(wsp + [len(subwords) + 1], dtype=torch.long)
+            for wsp, subwords in zip(word_start_positions, batch_subwords)
+        ]
+        lengths = torch.tensor(
+            [wsp[-1] for wsp in word_start_positions], dtype=torch.long
+        )
+        word_start_positions = pad_sequence(
+            word_start_positions, batch_first=True, padding_value=-1
+        )
+
+        dataset = TensorDataset(
+            batch_encoding.input_ids,
+            batch_encoding.attention_mask,
+            word_start_positions,
+            lengths,
         )
 
         sampler = SequentialSampler(dataset)
-        loader = DataLoader(dataset, sampler=sampler, batch_size=batch_size)
+        loader = DataLoader(
+            dataset,
+            sampler=sampler,
+            batch_size=batch_size,
+            shuffle=False,
+        )
 
+        dataset_arcs = []
+        dataset_rels = []
         for batch in tqdm(
-            loader, desc="Parsing (in batches of " + str(batch_size) + ")"
+            loader,
+            desc="Parsing (in batches of " + str(batch_size) + ")",
+            disable=not verbose,
         ):
             batch = tuple(t.to(self.device) for t in batch)
 
             with torch.no_grad():
-                b_outputs = self.model(batch)
-
-            rel_scores = b_outputs[0]
-            arc_scores = b_outputs[1]
+                rel_scores, arc_scores = self.model(batch)
 
             arc_preds = arc_scores.argmax(-1)
             if len(arc_preds.shape) == 1:
