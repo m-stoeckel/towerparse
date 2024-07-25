@@ -53,7 +53,6 @@ class TowerParser:
             self.tokenizer,
             lang,
             max_length=max_length,
-            max_word_len=max_word_len,
         )
 
         sampler = SequentialSampler(dataset)

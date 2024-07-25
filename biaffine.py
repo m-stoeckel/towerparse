@@ -13,7 +13,6 @@ from transformers import (
 def merge_subword_tokens(
     subword_outputs: torch.Tensor,
     word_starts: list[int],
-    max_word_len=140,
 ):
     instances = []
 
@@ -35,22 +34,9 @@ def merge_subword_tokens(
             vecs_range = subword_vecs[start:end]
             word_vecs.append(torch.mean(vecs_range, 0).unsqueeze(0))
 
-        instances.append(word_vecs)
+        instances.append(torch.cat(word_vecs, dim=0))
 
-    t_insts = []
-
-    hidden_size = 768
-    zero_tens = torch.zeros(hidden_size).unsqueeze(0)
-    zero_tens = zero_tens.to(subword_outputs.device)
-
-    for inst in instances:
-        if len(inst) < max_word_len:
-            for i in range(max_word_len - len(inst)):
-                inst.append(zero_tens)
-        t_insts.append(torch.cat(inst, dim=0).unsqueeze(0))
-
-    w_tens = torch.cat(t_insts, dim=0)
-    return w_tens
+    return torch.nn.utils.rnn.pad_sequence(instances, batch_first=True)
 
 
 def get_loss(arc_preds, rel_preds, labels_arc, labels_rel, loss_fn):
