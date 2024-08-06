@@ -14,7 +14,9 @@ from towerparse.data_provider import language_specific_preprocessing
 class TowerParser:
     def __init__(self, tower_model, device="cpu"):
         self.tower_model = None
-        self.tokenizer = XLMRobertaTokenizerFast.from_pretrained("xlm-roberta-base")
+        self.tokenizer: XLMRobertaTokenizerFast = (
+            XLMRobertaTokenizerFast.from_pretrained("xlm-roberta-base")
+        )
         self.device = torch.device(device)
         self.load_parser(tower_model)
 
@@ -44,13 +46,17 @@ class TowerParser:
         lang: str,
         sentences: list[list[str]],
         batch_size=1,
-        max_length=510,
         verbose: bool = False,
-    ) -> tuple[list[list[tuple[int, str, int, str]]], list[dict]]:
+    ) -> list[list[tuple[int, str, int, str]]]:
+        preprocessed_sentences = [
+            language_specific_preprocessing(lang, sent) for sent in sentences
+        ]
 
-        self.tokenizer: XLMRobertaTokenizerFast
+        if not preprocessed_sentences or not any(preprocessed_sentences):
+            return []
+        
         batch_encoding = self.tokenizer(
-            [language_specific_preprocessing(lang, sent) for sent in sentences],
+            preprocessed_sentences,
             padding=True,
             truncation=True,
             return_tensors="pt",
